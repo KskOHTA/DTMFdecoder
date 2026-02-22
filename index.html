@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DTMF Decoder - Gated Loopback</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: sans-serif; }
+        .keypad-btn {
+            background: #334155;
+            transition: background 0.1s;
+            user-select: none;
+            touch-action: none; /* 防止移動端長按菜單 */
+        }
+        .keypad-btn:active { background: #1e293b; border-color: #38bdf8; }
+        .keypad-btn.active { background: #0369a1; border-color: #38bdf8; }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-4xl mx-auto">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold mb-2 text-sky-400">DTMF Decoder</h1>
+            <p class="text-slate-400">Gated Signal Generation & Loopback</p>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <!-- Left Column: Controls & Visualizer -->
+            <div class="bg-slate-800 p-6 rounded-2xl shadow-xl border border-slate-700">
+                <div class="flex flex-col gap-4 mb-6">
+                    <div class="flex items-center justify-between bg-slate-900 p-3 rounded-xl border border-slate-700">
+                        <span class="text-sm font-medium">マイク入力</span>
+                        <button id="micBtn" class="bg-slate-700 hover:bg-slate-600 px-4 py-1 rounded-lg text-sm transition border border-slate-500">
+                            開始
+                        </button>
+                    </div>
+
+                    <div id="status" class="flex items-center text-xs text-slate-500">
+                        <span id="statusIndicator" class="w-2 h-2 bg-slate-600 rounded-full mr-2"></span> 
+                        <span id="statusText">オーディオ未初期化</span>
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <h3 class="text-sm font-semibold mb-2 text-slate-300">リアルタイム・スペクトラム</h3>
+                    <canvas id="visualizer" class="w-full h-40 bg-slate-900 rounded-lg border border-slate-700"></canvas>
+                </div>
+
+                <div class="bg-black p-4 rounded-lg border border-slate-700">
+                    <h3 class="text-xs font-bold mb-2 text-slate-500 uppercase">デコード履歴</h3>
+                    <div id="resultDisplay" class="text-4xl font-mono tracking-widest text-emerald-400 break-all min-h-[3rem] flex items-center">
+                        -
+                    </div>
+                    <button id="clearBtn" class="mt-4 text-xs text-slate-500 hover:text-slate-300 underline">履歴クリア</button>
+                </div>
+            </div>
+
+            <!-- Right Column: Keypad Simulator -->
+            <div class="bg-slate-800 p-6 rounded-2xl shadow-xl border border-slate-700">
+                <h3 class="text-lg font-semibold mb-2 text-center">シミュレーター</h3>
+                <p class="text-xs text-slate-400 text-center mb-6">ボタンを「押している間」だけ信号が生成されます</p>
+                <div class="grid grid-cols-4 gap-3" id="keypad">
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="1">1</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="2">2</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="3">3</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl bg-slate-700 text-orange-400 border border-transparent" data-key="A">A</button>
+                    
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="4">4</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="5">5</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="6">6</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl bg-slate-700 text-orange-400 border border-transparent" data-key="B">B</button>
+                    
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="7">7</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="8">8</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="9">9</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl bg-slate-700 text-orange-400 border border-transparent" data-key="C">C</button>
+                    
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="*">*</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="0">0</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl border border-transparent" data-key="#">#</button>
+                    <button class="keypad-btn p-4 rounded-lg font-bold text-xl bg-slate-700 text-orange-400 border border-transparent" data-key="D">D</button>
+                </div>
+                
+                <div class="mt-6 flex flex-col gap-2">
+                  <div class="flex items-center gap-3">
+                    <input type="checkbox" id="muteSpeaker" class="w-4 h-4">
+                    <label for="muteSpeaker" class="text-sm text-slate-300">確認音をスピーカーから出さない</label>
+                  </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const DTMF_FREQ = {
+            low: [697, 770, 852, 941],
+            high: [1209, 1336, 1477, 1633]
+        };
+
+        const KEY_MAP = {
+            '1': [697, 1209], '2': [697, 1336], '3': [697, 1477], 'A': [697, 1633],
+            '4': [770, 1209], '5': [770, 1336], '6': [770, 1477], 'B': [770, 1633],
+            '7': [852, 1209], '8': [852, 1336], '9': [852, 1477], 'C': [852, 1633],
+            '*': [941, 1209], '0': [941, 1336], '#': [941, 1477], 'D': [941, 1633]
+        };
+
+        const WINDOW_SIZE = 512;
+        const THRESHOLD = 0.04;
+        const MIN_DURATION = 5; 
+        const SILENCE_GAP = 5;
+
+        let audioCtx = null;
+        let decoderNode = null;
+        let micStream = null;
+        let micSource = null;
+        let loopbackBus = null;
+        let isMicEnabled = false;
+
+        // Current Active Oscillators for "Hold to Play"
+        let activeOscillators = {
+            oscLow: null,
+            oscHigh: null,
+            gainNode: null
+        };
+
+        const state = {
+            energies: new Array(8).fill(0),
+            pendingKey: null,
+            lastDetectedKey: null,
+            count: 0,
+            silenceCount: 0,
+            history: ""
+        };
+
+        const canvas = document.getElementById('visualizer');
+        const ctx = canvas.getContext('2d');
+        const resultDisplay = document.getElementById('resultDisplay');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+
+        function initAudio() {
+            if (audioCtx) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            initCoeffs(audioCtx.sampleRate);
+
+            loopbackBus = audioCtx.createGain();
+            decoderNode = audioCtx.createScriptProcessor(WINDOW_SIZE, 1, 1);
+            decoderNode.onaudioprocess = (e) => processAudio(e.inputBuffer.getChannelData(0));
+
+            loopbackBus.connect(decoderNode);
+            decoderNode.connect(audioCtx.destination);
+
+            statusIndicator.className = "w-2 h-2 bg-emerald-500 rounded-full mr-2";
+            statusText.textContent = "初期化完了 (内部バス接続済み)";
+        }
+
+        let coeffs = [];
+        function initCoeffs(sampleRate) {
+            const frequencies = [...DTMF_FREQ.low, ...DTMF_FREQ.high];
+            coeffs = frequencies.map(f => {
+                const k = Math.floor(0.5 + (WINDOW_SIZE * f) / sampleRate);
+                const omega = (2 * Math.PI * k) / WINDOW_SIZE;
+                return { coeff: 2 * Math.cos(omega) };
+            });
+        }
+
+        function processAudio(buffer) {
+            const results = coeffs.map(c => {
+                let q0 = 0, q1 = 0, q2 = 0;
+                for (let i = 0; i < buffer.length; i++) {
+                    q0 = c.coeff * q1 - q2 + buffer[i];
+                    q2 = q1;
+                    q1 = q0;
+                }
+                const power = q1 * q1 + q2 * q2 - q1 * q2 * c.coeff;
+                return Math.sqrt(power) / (WINDOW_SIZE / 2);
+            });
+            state.energies = results;
+            updateDecoder(results);
+            drawVisualizer();
+        }
+
+        function updateDecoder(energies) {
+            const lowGroup = energies.slice(0, 4);
+            const highGroup = energies.slice(4, 8);
+            const maxLow = Math.max(...lowGroup);
+            const maxHigh = Math.max(...highGroup);
+            const lowIdx = lowGroup.indexOf(maxLow);
+            const highIdx = highGroup.indexOf(maxHigh);
+            const twist = 20 * Math.log10(maxLow / maxHigh);
+            
+            let detectedKey = null;
+            if (maxLow > THRESHOLD && maxHigh > THRESHOLD && Math.abs(twist) < 8) {
+                const lowFreq = DTMF_FREQ.low[lowIdx];
+                const highFreq = DTMF_FREQ.high[highIdx];
+                for (let [k, [fL, fH]] of Object.entries(KEY_MAP)) {
+                    if (fL === lowFreq && fH === highFreq) {
+                        detectedKey = k;
+                        break;
+                    }
+                }
+            }
+
+            if (detectedKey) {
+                state.silenceCount = 0;
+                if (detectedKey === state.pendingKey) {
+                    state.count++;
+                    if (state.count === MIN_DURATION && detectedKey !== state.lastDetectedKey) {
+                        state.lastDetectedKey = detectedKey;
+                        state.history += detectedKey;
+                        resultDisplay.textContent = state.history;
+                        triggerVisualFlash();
+                    }
+                } else {
+                    state.pendingKey = detectedKey;
+                    state.count = 1;
+                }
+            } else {
+                state.silenceCount++;
+                if (state.silenceCount > SILENCE_GAP) {
+                    state.lastDetectedKey = null;
+                    state.pendingKey = null;
+                    state.count = 0;
+                }
+            }
+        }
+
+        function triggerVisualFlash() {
+            resultDisplay.classList.add('text-white', 'scale-110');
+            setTimeout(() => resultDisplay.classList.remove('text-white', 'scale-110'), 100);
+        }
+
+        function drawVisualizer() {
+            const w = canvas.width = canvas.offsetWidth;
+            const h = canvas.height = canvas.offsetHeight;
+            ctx.clearRect(0, 0, w, h);
+            const labels = [...DTMF_FREQ.low, ...DTMF_FREQ.high];
+            const barSpacing = w / 8;
+            const barWidth = barSpacing * 0.7;
+
+            state.energies.forEach((energy, i) => {
+                const barHeight = Math.min(h, energy * h * 1.5);
+                const x = i * barSpacing + (barSpacing - barWidth) / 2;
+                const isDetected = energy > THRESHOLD;
+                ctx.fillStyle = isDetected ? '#0ea5e9' : '#1e293b';
+                ctx.beginPath();
+                ctx.roundRect(x, h - barHeight - 15, barWidth, barHeight, 4);
+                ctx.fill();
+                ctx.fillStyle = isDetected ? '#f8fafc' : '#475569';
+                ctx.font = '10px monospace';
+                ctx.textAlign = 'center';
+                ctx.fillText(labels[i], x + barWidth/2, h - 2);
+            });
+        }
+
+        async function toggleMic() {
+            if (!audioCtx) initAudio();
+            if (audioCtx.state === 'suspended') await audioCtx.resume();
+            if (!isMicEnabled) {
+                try {
+                    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    micSource = audioCtx.createMediaStreamSource(micStream);
+                    micSource.connect(decoderNode);
+                    document.getElementById('micBtn').textContent = "停止";
+                    document.getElementById('micBtn').classList.add('bg-red-600');
+                    isMicEnabled = true;
+                } catch (err) { alert("マイクが利用できません。"); }
+            } else {
+                if (micSource) micSource.disconnect();
+                if (micStream) micStream.getTracks().forEach(t => t.stop());
+                document.getElementById('micBtn').textContent = "開始";
+                document.getElementById('micBtn').classList.remove('bg-red-600');
+                isMicEnabled = false;
+            }
+        }
+
+        /**
+         * START Gated Tone
+         */
+        function startTone(key) {
+            if (!audioCtx) initAudio();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            
+            // Stop any existing tones first
+            stopTone();
+
+            const freqs = KEY_MAP[key];
+            const oscLow = audioCtx.createOscillator();
+            const oscHigh = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+
+            oscLow.frequency.value = freqs[0];
+            oscHigh.frequency.value = freqs[1];
+
+            // 0.1s fade in to prevent clicks
+            gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+            gainNode.gain.linearRampToValueAtTime(0.5, audioCtx.currentTime + 0.05);
+
+            oscLow.connect(gainNode);
+            oscHigh.connect(gainNode);
+            
+            // Connect to Loopback Bus
+            gainNode.connect(loopbackBus);
+
+            // Connect to Speaker if not muted
+            if (!document.getElementById('muteSpeaker').checked) {
+                const speakerGain = audioCtx.createGain();
+                speakerGain.gain.value = 0.2;
+                gainNode.connect(speakerGain);
+                speakerGain.connect(audioCtx.destination);
+            }
+
+            oscLow.start();
+            oscHigh.start();
+
+            activeOscillators = { oscLow, oscHigh, gainNode };
+        }
+
+        /**
+         * STOP Gated Tone
+         */
+        function stopTone() {
+            if (activeOscillators.gainNode) {
+                const { oscLow, oscHigh, gainNode } = activeOscillators;
+                const releaseTime = 0.05;
+                gainNode.gain.cancelScheduledValues(audioCtx.currentTime);
+                gainNode.gain.setValueAtTime(gainNode.gain.value, audioCtx.currentTime);
+                gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + releaseTime);
+                
+                oscLow.stop(audioCtx.currentTime + releaseTime);
+                oscHigh.stop(audioCtx.currentTime + releaseTime);
+                
+                activeOscillators = { oscLow: null, oscHigh: null, gainNode: null };
+            }
+        }
+
+        // Event Handling
+        const keypad = document.getElementById('keypad');
+        
+        const handleDown = (e) => {
+            const btn = e.target.closest('.keypad-btn');
+            if (!btn) return;
+            e.preventDefault();
+            const key = btn.getAttribute('data-key');
+            btn.classList.add('active');
+            startTone(key);
+        };
+
+        const handleUp = (e) => {
+            const btn = e.target.closest('.keypad-btn');
+            document.querySelectorAll('.keypad-btn').forEach(b => b.classList.remove('active'));
+            stopTone();
+        };
+
+        keypad.addEventListener('mousedown', handleDown);
+        window.addEventListener('mouseup', handleUp);
+        
+        keypad.addEventListener('touchstart', handleDown);
+        window.addEventListener('touchend', handleUp);
+
+        document.getElementById('micBtn').addEventListener('click', toggleMic);
+        document.getElementById('clearBtn').addEventListener('click', () => {
+            state.history = "";
+            resultDisplay.textContent = "-";
+        });
+
+        window.addEventListener('resize', drawVisualizer);
+    </script>
+</body>
+</html>
+
